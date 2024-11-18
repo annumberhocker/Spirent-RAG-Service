@@ -39,6 +39,8 @@ from customTypes.queryLLMRequest import queryLLMRequest
 from customTypes.queryLLMResponse import queryLLMResponse
 from customTypes.queryWDLLMRequest import queryWDLLMRequest
 from customTypes.queryWDLLMResponse import queryWDLLMResponse
+from customTypes.retrieveDocRequest import retrieveDocRequest
+from customTypes.retrieveDocResponse import retrieveDocResponse
 
 app = FastAPI()
 
@@ -231,6 +233,67 @@ async def create_inference_pipeline(client, pipeline_name, esIndexTextField, esM
     #     pass
     response = await client.ingest.put_pipeline(id=pipeline_name, body=pipeline_config)
     return response
+
+
+@app.post("/retrieveDocs")
+async def retrieveDocs(request: retrieveDocRequest, api_key: str = Security(get_api_key))->List[retrieveDocResponse]:
+    """
+    Search Elasticsearch for documents that match the user's query.
+    """
+    question         = request.question
+    index_name       = request.es_index_name
+    index_text_field = request.es_index_text_field
+    es_model_name    = request.es_model_name
+    model_text_field = request.es_model_text_field
+    num_results      = request.num_results
+    es_filters       = request.filters
+
+    try:
+        async_es_client = AsyncElasticsearch(
+            wxd_creds["wxdurl"],
+            basic_auth=(wxd_creds["username"], wxd_creds["password"]),
+            verify_certs=False,
+            request_timeout=3600,
+        )
+    except Exception as e:
+      return ingestResponse(response = json.dumps({"error": repr(e)}))
+
+    await async_es_client.info()
+
+    search_query = {
+      "size": num_results,
+      "query": {
+        "text_expansion": {
+          model_text_field: {
+            "model_id": es_model_name, 
+            "model_text": question
+          }
+        }
+      },
+      "_source":["file_name", "url", index_text_field] 
+    }
+
+    print (search_query)
+    try:
+
+        # Perform search query in Elasticsearch
+        response = await async_es_client.search(index=index_name, body=search_query)
+        await async_es_client.close()
+
+        documents = []
+        for hit in response['hits']['hits']:
+            source = hit['_source']
+            documents.append({
+                "file_name": source.get("file_name", "N/A"),
+                "url": source.get("url", "N/A"),
+                "text": source.get(index_text_field, "N/A")
+            })
+
+        return documents
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
 
 # Uses Llama-index to obtain the context from an ES query
 # which uses WML library underneath the hood via
